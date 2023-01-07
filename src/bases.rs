@@ -1,4 +1,4 @@
-/// Base struct contains string representations for api url and web url
+/// Struct container for base options
 #[derive(Clone, Debug)]
 pub struct Base {
     pub api_url: String,
@@ -22,7 +22,7 @@ impl Base {
     /// Example
     /// ```
     /// // Import base
-    /// use library::base::Base;
+    /// use library::Base;
     ///
     /// // Create new base instance
     /// let base = Base::new();
@@ -36,7 +36,7 @@ impl Base {
     /// Example
     /// ```
     /// // Import base
-    /// use library::base::Base;
+    /// use library::Base;
     ///
     /// // Create new base instance
     /// let mut base = Base::new();
@@ -57,7 +57,7 @@ impl Base {
     /// Example
     /// ```
     /// // Import base
-    /// use library::base::Base;
+    /// use library::Base;
     ///
     /// // Create new base instance
     /// let mut base = Base::new();

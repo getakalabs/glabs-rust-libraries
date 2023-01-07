@@ -3,7 +3,7 @@ use std::fmt::Display;
 use actix_web::body::BoxBody;
 use serde::Serialize;
 
-/// Payload struct which accommodates slack webhook format and default GLabs framework format
+/// Struct container for payloads options
 #[derive(Debug, Clone, Serialize)]
 pub struct Payload {
     #[serde(skip_serializing_if = "Option::is_none")]

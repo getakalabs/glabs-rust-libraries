@@ -322,3 +322,84 @@ pub fn normalize_name<T: Into<String>>(value: T) -> String {
 
     name_vector.clone().join(" ").to_string()
 }
+
+/// Modifies filename to add marker on each file
+pub fn replace_filename<S,R>(s: S, replacement: R) -> String
+    where S: Into<String>,
+          R: Into<String>
+{
+    // Create bindings
+    let s_bindings = s.into();
+    let replacement_bindings = replacement.into();
+
+    // Retrieve path
+    let mut path = std::path::PathBuf::from(s_bindings.clone());
+
+    // Retrieve extension
+    let extension = path
+        .extension()
+        .map(|extension| {
+            extension
+                .to_str()
+                .map(|str| str.to_string())
+                .unwrap_or(String::default())
+        })
+        .unwrap_or(String::default());
+
+    // Prune the file name
+    let _ = path.set_extension("");
+
+    // Retrieve filename
+    let file_name = path
+        .file_name()
+        .map_or(String::default(), |filename| {
+            filename
+                .to_str()
+                .map(|str| str.to_string())
+                .unwrap_or(String::default())
+        });
+
+    // Return formatted string
+    format!("{}-{}.{}", file_name, replacement_bindings, extension)
+}
+
+/// Change filename extension
+pub fn change_extension<S: Into<String>, E: Into<String>>(s: S, extension: E) -> String {
+    // Create bindings
+    let s_bindings = s.into();
+    let extension_bindings = extension.into().to_lowercase().replace(".", "");
+
+    // Modify string
+    let mut path = std::path::PathBuf::from(s_bindings.clone());
+
+    // Prune the file name
+    let _ = path.set_extension("");
+
+    // Retrieve filename
+    let file_name = path
+        .file_name()
+        .map_or(String::default(), |filename| {
+            filename
+                .to_str()
+                .map(|str| str.to_string())
+                .unwrap_or(String::default())
+        });
+
+
+    // Return file name
+    format!("{}.{}", file_name, extension_bindings)
+}
+
+/// Find lthe last occurance from string
+pub fn rfind_utf8<S: Into<String>, C: Into<char>>(s: S, chr: C) -> Option<usize> {
+    // Create bindings
+    let s_bindings = s.into();
+    let chr_bindings = chr.into();
+
+    // Reverse find
+    if let Some(rev_pos) = s_bindings.chars().rev().position(|c| c == chr_bindings) {
+        Some(s_bindings.chars().count() - rev_pos - 1)
+    } else {
+        None
+    }
+}

@@ -3,10 +3,9 @@ use lettre::message::{header, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 
 use crate::Errors;
-use crate::traits::Configurable;
 
 /// Mailer struct contains commonly used smtp email credentials
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mailer {
     pub sender: String,
     pub username: String,
@@ -28,21 +27,21 @@ impl Default for Mailer {
     }
 }
 
-// Set Configurable trait
-impl Configurable<Mailer> for Mailer {
+
+// Mailer implementation
+impl Mailer {
     /// Implement new instance
     ///
     /// Example
     /// ```
     /// use library::Mailer;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new mailer instance with default values
     ///     let mailer = Mailer::new();
     /// }
     /// ```
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -51,7 +50,6 @@ impl Configurable<Mailer> for Mailer {
     /// Example
     /// ```
     /// use library::Mailer;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new mailer instance with default values
@@ -59,7 +57,7 @@ impl Configurable<Mailer> for Mailer {
     ///     mailer.clear();
     /// }
     /// ```
-    fn clear(&mut self) -> Self {
+    pub fn clear(&mut self) -> Self {
         Self::default()
     }
 
@@ -68,7 +66,6 @@ impl Configurable<Mailer> for Mailer {
     /// Example
     /// ```
     /// use library::Mailer;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create old mailer instance with default values
@@ -82,7 +79,7 @@ impl Configurable<Mailer> for Mailer {
     ///     old_mailer.reconfigure(&new_mailer);
     /// }
     /// ```
-    fn reconfigure(&mut self, item: &Mailer) {
+    pub fn reconfigure(&mut self, item: &Mailer) {
         self.sender = item.clone().sender;
         self.username = item.clone().username;
         self.password = item.clone().password;
@@ -95,42 +92,24 @@ impl Configurable<Mailer> for Mailer {
     /// Example
     /// ```
     /// use library::Mailer;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new mailer instance with default values
     ///     let mailer = Mailer::new();
-    ///     let is_valid = mailer.is_none();
+    ///     let is_valid = mailer.is_empty();
     /// }
     /// ```
-    fn is_none(&self) -> bool {
-        let items = [
-            self.clone().sender,
-            self.clone().username,
-            self.clone().password,
-            self.clone().service,
-            self.clone().smtp_host
-        ];
-
-        for item in items {
-            if !item.is_empty() {
-                return false
-            }
-        }
-
-        true
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.clone() == Self::default()
     }
-}
 
-// Mailer implementation
-impl Mailer {
     /// Sends email
     ///
     /// Example
     /// ```
     /// // Import mailer error
     /// use library::mailers::Mailer;
-    /// use library::traits::Configurable;
     ///
     /// // Set mailer
     /// let mailer = Mailer::new();
@@ -138,14 +117,14 @@ impl Mailer {
     /// ```
     pub fn send_mail(&self, to: &str, subject: &str, body: &str) -> Result<String, Errors> {
         // Check if self has data
-        if self.is_none() {
+        if self.is_empty() {
             return Err(Errors::new("Your platform's email configuration is invalid. Please contact your administrator"));
         }
 
         // Create multipart body
         let multipart = MultiPart::alternative()
             .singlepart(
-            SinglePart::builder()
+                SinglePart::builder()
                     .header(header::ContentType::TEXT_HTML)
                     .body(body.to_string())
             );

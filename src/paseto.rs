@@ -1,13 +1,13 @@
 use chrono::{DateTime, Duration, Utc};
 use paseto::tokens::{validate_local_token, PasetoBuilder, TimeBackend};
+use serde::Serialize;
 
 use crate::Cipher;
 use crate::Errors;
 use crate::Token;
-use crate::traits::{Configurable, ToJson};
 
-/// Paseto struct contains paseto specific information
-#[derive(Debug, Clone)]
+/// Struct container for paseto
+#[derive(Debug, Clone, PartialEq)]
 pub struct Paseto {
     pub app_name: String,
     pub access_token_key_unit: i32,
@@ -33,21 +33,20 @@ impl Default for Paseto {
     }
 }
 
-/// Configurable implementation for Paseto
-impl Configurable<Paseto> for Paseto {
+/// Paseto implementation
+impl Paseto {
     /// Implement new instance
     ///
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new paseto instance with default values
     ///     let paseto = Paseto::new();
     /// }
     /// ```
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -56,7 +55,6 @@ impl Configurable<Paseto> for Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new paseto instance with default values
@@ -64,7 +62,7 @@ impl Configurable<Paseto> for Paseto {
     ///     paseto.clear();
     /// }
     /// ```
-    fn clear(&mut self) -> Self {
+    pub fn clear(&mut self) -> Self {
         Self::default()
     }
 
@@ -73,7 +71,6 @@ impl Configurable<Paseto> for Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create old paseto instance with default values
@@ -87,7 +84,7 @@ impl Configurable<Paseto> for Paseto {
     ///     old_paseto.reconfigure(&new_paseto);
     /// }
     /// ```
-    fn reconfigure(&mut self, item: &Paseto) {
+    pub fn reconfigure(&mut self, item: &Paseto) {
         self.access_token_key_unit = item.clone().access_token_key_unit;
         self.access_token_key_time = item.clone().access_token_key_time;
         self.access_token_key_signing = item.clone().access_token_key_signing;
@@ -96,59 +93,22 @@ impl Configurable<Paseto> for Paseto {
         self.refresh_token_key_signing = item.clone().refresh_token_key_signing;
     }
 
-    /// Check if current instance has no value
+    /// Check if paseto has no value
     ///
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new paseto instance with default values
     ///     let paseto = Paseto::new();
-    ///     let is_valid = paseto.is_none();
+    ///     let is_empty = paseto.is_empty();
     /// }
     /// ```
-    fn is_none(&self) -> bool {
-        let items = [
-            self.clone().access_token_key_time,
-            self.clone().refresh_token_key_time,
-        ];
-
-        for item in items {
-            if !item.is_empty() {
-                return false
-            }
-        }
-
-        let items = [
-            self.clone().access_token_key_unit,
-            self.clone().refresh_token_key_unit,
-        ];
-
-        for item in items {
-            if item > 0 {
-                return false
-            }
-        }
-
-        let items = [
-            self.clone().access_token_key_signing,
-            self.clone().refresh_token_key_signing,
-        ];
-
-        for item in items {
-            if item.len() > 0 {
-                return false
-            }
-        }
-
-        true
+    pub fn is_empty(&self) -> bool {
+        self.clone() == Self::default()
     }
-}
 
-/// Paseto implementation
-impl Paseto {
     /// Create new instance with app name
     ///
     /// Example
@@ -171,7 +131,6 @@ impl Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::ToJson;
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,12 +141,6 @@ impl Paseto {
     ///     pub first_name: Option<String>,
     ///     #[serde(skip_serializing_if = "Option::is_none")]
     ///     pub last_name: Option<String>,
-    /// }
-    ///
-    /// impl ToJson for Actor {
-    ///     fn to_json(&self) -> serde_json::Value {
-    ///        serde_json::to_value(self.clone()).unwrap()
-    ///    }
     /// }
     ///
     /// impl Default for Actor {
@@ -226,8 +179,10 @@ impl Paseto {
     /// ```
     pub fn generate_tokens<I, C>(&self, id:I, claims: &C) -> Result<Token, Errors>
         where I: Into<String>,
-              C: ToJson
+              C: Serialize
     {
+        let c = serde_json::to_value(claims.clone()).unwrap();
+
         // Set access token duration
         let access_token_duration = match self.access_token_key_time.as_ref() {
             "Minutes" => Duration::minutes(i64::from(self.access_token_key_unit)),
@@ -248,7 +203,7 @@ impl Paseto {
             .set_expiration(&access_token_expiry)
             .set_subject(&aid)
             .set_footer(format!("key-id:{}", &self.app_name).as_str())
-            .set_claim("data", claims.to_json())
+            .set_claim("data", c.clone())
             .build();
 
         if access_token.is_err() {
@@ -272,7 +227,7 @@ impl Paseto {
             .set_expiration(&refresh_token_expiry)
             .set_subject(&aid)
             .set_footer(format!("key-id:{}", &self.app_name).as_str())
-            .set_claim("data", claims.to_json())
+            .set_claim("data", c.clone())
             .build();
 
         if refresh_token.is_err() {
@@ -289,7 +244,7 @@ impl Paseto {
         let cipher = cipher.unwrap();
 
         // Create encrypted web token
-        let encrypted = cipher.encrypt_web(claims.to_json().to_string().trim());
+        let encrypted = cipher.encrypt_web(c.to_string().trim());
         if encrypted.is_err() {
             return Err(Errors::new("Encryption failed"));
         }
@@ -309,7 +264,6 @@ impl Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::ToJson;
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -320,12 +274,6 @@ impl Paseto {
     ///     pub first_name: Option<String>,
     ///     #[serde(skip_serializing_if = "Option::is_none")]
     ///     pub last_name: Option<String>,
-    /// }
-    ///
-    /// impl ToJson for Actor {
-    ///     fn to_json(&self) -> serde_json::Value {
-    ///        serde_json::to_value(self.clone()).unwrap()
-    ///    }
     /// }
     ///
     /// impl Default for Actor {
@@ -369,7 +317,7 @@ impl Paseto {
     /// ```
     pub fn validate_access_token<T, C>(&self, token: T, _: C) -> Result<C, Errors>
         where T: Into<String>,
-              C: ToJson + Default + for<'de> serde::Deserialize<'de>
+              C: serde::de::DeserializeOwned + Default
     {
         // Verify token
         let result = validate_local_token(
@@ -414,7 +362,6 @@ impl Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::ToJson;
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -425,12 +372,6 @@ impl Paseto {
     ///     pub first_name: Option<String>,
     ///     #[serde(skip_serializing_if = "Option::is_none")]
     ///     pub last_name: Option<String>,
-    /// }
-    ///
-    /// impl ToJson for Actor {
-    ///     fn to_json(&self) -> serde_json::Value {
-    ///        serde_json::to_value(self.clone()).unwrap()
-    ///    }
     /// }
     ///
     /// impl Default for Actor {
@@ -474,7 +415,7 @@ impl Paseto {
     /// ```
     pub fn validate_refresh_token<T, C>(&self, token: T, _: C) -> Result<C, Errors>
         where T: Into<String>,
-              C: ToJson + Default + for<'de> serde::Deserialize<'de>
+              C: serde::de::DeserializeOwned + Default
     {
         // Verify token
         let result = validate_local_token(
@@ -519,7 +460,6 @@ impl Paseto {
     /// Example
     /// ```
     /// use library::Paseto;
-    /// use library::traits::ToJson;
     /// use serde::{Serialize, Deserialize};
     ///
     /// #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -530,12 +470,6 @@ impl Paseto {
     ///     pub first_name: Option<String>,
     ///     #[serde(skip_serializing_if = "Option::is_none")]
     ///     pub last_name: Option<String>,
-    /// }
-    ///
-    /// impl ToJson for Actor {
-    ///     fn to_json(&self) -> serde_json::Value {
-    ///        serde_json::to_value(self.clone()).unwrap()
-    ///    }
     /// }
     ///
     /// impl Default for Actor {
@@ -579,7 +513,7 @@ impl Paseto {
     /// ```
     pub fn validate_web_token<T, C>(&self, token: T, _: C) -> Result<C, Errors>
         where T: Into<String>,
-              C: ToJson + Default + for<'de> serde::Deserialize<'de>
+              C: serde::de::DeserializeOwned + Default
     {
         // Set cipher
         let cipher = Cipher::new();

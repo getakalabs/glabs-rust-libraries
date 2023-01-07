@@ -2,49 +2,37 @@ use actix_web::rt::time::interval;
 use actix_web_lab::sse as awl_sse;
 use futures_util::future;
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{sync::Arc, time::Duration};
 
-/// Static for subscription ping
-pub static SUBSCRIPTION_PING: &'static str = "ping";
-
-/// Static default connection action
-pub static SUBSCRIPTION_CONNECTION_ACTION: &'static str = "connection";
-
-/// Static content
-pub static SUBSCRIPTION_CONNECTION_CONTENT: &'static str = "Successfully Connected";
-
-/// Static module
-pub static SUBSCRIPTION_CONNECTION_MODULE: &'static str = "SSE";
-
-/// Static event
-pub static SUBSCRIPTION_EVENT: &'static str = "message";
+use super::BroadcasterInner;
+use super::Data;
+use super::Message;
+use super::System;
 
 /// Create broadcaster struct
-pub struct SSEBroadcaster {
-    inner: Mutex<SSEBroadcasterInner>,
-}
-
-/// Create inner broadcaster struct
-#[derive(Debug, Clone)]
-pub struct SSEBroadcasterInner {
-    clients: HashMap<String, Vec<awl_sse::Sender>>,
+pub struct Broadcaster {
+    inner: Mutex<BroadcasterInner>,
+    system: System,
 }
 
 // Implement broadcaster functions
-impl SSEBroadcaster {
+impl Broadcaster {
     /// Constructs new broadcaster and spawns ping loop.
-    pub fn new() -> Arc<Self> {
+    pub fn new(system: System) -> Arc<Self> {
+        // Create system
+        let mut sys = System::new();
+        if !system.is_empty() {
+            sys = system.clone();
+        }
+
         // Create broadcaster with channel
-        let this = Arc::new(SSEBroadcaster {
-            inner: Mutex::new(SSEBroadcasterInner {
+        let this = Arc::new(Broadcaster {
+            inner: Mutex::new(super::BroadcasterInner {
                 clients: HashMap::<String, Vec<awl_sse::Sender>>::new()
             }),
+            system: sys
         });
-
-        // Spawn ping in a loop so it won't drop the stream right away
-        SSEBroadcaster::spawn_ping(Arc::clone(&this));
 
         // Return broadcaster
         this
@@ -78,7 +66,7 @@ impl SSEBroadcaster {
             // loop through all senders
             for sender in senders {
                 // Send ping
-                if sender.send(awl_sse::Event::Comment(SUBSCRIPTION_PING.into())).await.is_ok() {
+                if sender.send(awl_sse::Event::Comment(self.system.clone().ping.into())).await.is_ok() {
                     ok_senders.push(sender.clone())
                 }
             }
@@ -98,14 +86,15 @@ impl SSEBroadcaster {
         let (sender, stream) = awl_sse::channel(10);
 
         // Create message data
-        let mut message = SSEData::default();
-        message.action = Some(String::from(SUBSCRIPTION_CONNECTION_ACTION));
-        message.content = Some(String::from(SUBSCRIPTION_CONNECTION_CONTENT));
-        message.module = Some(String::from(SUBSCRIPTION_CONNECTION_MODULE));
+        let mut message = Data::default();
+        message.action = Some(String::from(self.system.clone().action));
+        message.content = Some(String::from(self.system.clone().content));
+        message.module = Some(String::from(self.system.clone().module));
 
         // Create data
         let content = r#"{"action": "connection", "content": "Successfully Connected", "module": "SSE"}"#;
-        let data = serde_json::to_string(&message).unwrap_or(String::from(content));
+        let data = serde_json::to_string(&message)
+            .unwrap_or(String::from(content));
 
         // Send connected message
         sender.send(awl_sse::Data::new(data)).await.unwrap();
@@ -136,16 +125,21 @@ impl SSEBroadcaster {
     }
 
     /// Broadcasts message to all clients within the channel.
-    pub async fn broadcast(&self, params: &SSEMessage) {
+    pub async fn broadcast(&self, params: &Message) {
         // Set channel, data and event
-        let mut channel = String::from("Global");
         let mut data = String::new();
-        let mut event = String::from(SUBSCRIPTION_EVENT);
+
+        // Set global channel string
+        let default_channel = String::from("Global");
 
         // Set channel
-        if params.channel.is_some() && !params.channel.as_ref().unwrap().is_empty() {
-            channel = params.channel.as_ref().unwrap().clone();
-        }
+        let channel = params.channel
+            .clone()
+            .map_or(default_channel.clone(), |s| {
+                s.is_empty()
+                    .then(|| default_channel.clone())
+                    .unwrap_or(default_channel.clone())
+            });
 
         // Set message data
         if params.data.is_some() {
@@ -156,10 +150,17 @@ impl SSEBroadcaster {
             }
         }
 
+        // Set default event
+        let default_event = String::from(self.system.clone().event);
+
         // Set event
-        if params.event.is_some() && !params.event.as_ref().unwrap().is_empty() {
-            event = params.event.as_ref().unwrap().clone();
-        }
+        let event = params.event
+            .clone()
+            .map_or(default_event.clone(), |s| {
+                s.is_empty()
+                    .then(|| default_event.clone())
+                    .unwrap_or(default_event.clone())
+            });
 
         // Check if channel exists
         match self.inner.lock().clients.get(channel.as_str()) {
@@ -174,79 +175,5 @@ impl SSEBroadcaster {
             },
             None => {}
         }
-    }
-}
-
-/// Create SSEData struct
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SSEData {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
-}
-
-// Implement default for SSEData
-impl Default for SSEData {
-    fn default() -> Self {
-        Self {
-            action: None,
-            content: None,
-            module: None
-        }
-    }
-}
-
-// Create SSEData implementation
-impl SSEData {
-    /// Create new instance
-    ///
-    /// Example
-    /// ```
-    /// use library::sse::SSEData;
-    ///
-    /// let data = SSEData::new();
-    /// ```
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Create SSEMessage struct
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SSEMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<SSEData>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub event: Option<String>,
-}
-
-// Implement default for SSEMessage
-impl Default for SSEMessage {
-    fn default() -> Self {
-        Self {
-            channel: None,
-            data: None,
-            event: None
-        }
-    }
-}
-
-// Create SSEMessage implementation
-impl SSEMessage {
-    /// Create new instance
-    ///
-    /// Example
-    /// ```
-    /// use library::sse::SSEMessage;
-    ///
-    /// let message = SSEMessage::new();
-    /// ```
-    pub fn new() -> Self {
-        Self::default()
     }
 }

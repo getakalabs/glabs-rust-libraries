@@ -8,7 +8,7 @@ use actix_web::{Error, FromRequest, HttpMessage, HttpRequest, web::Data};
 use actix_web::dev::{forward_ready, Payload, Service, ServiceRequest, ServiceResponse, Transform};
 use futures::future::{ok, Ready};
 use serde::Serialize;
-use user_agent_parser::UserAgentParser;
+use user_agent_parser::UserAgentParser as UAParser;
 
 use user_agent_cpu::UserAgentCPU;
 use user_agent_device::UserAgentDevice;
@@ -17,17 +17,17 @@ use user_agent_os::UserAgentOS;
 use user_agent_product::UserAgentProduct;
 
 // Create user agent parser
-pub struct Parser;
+pub struct UserAgentParser;
 
 // Create implementation for user agent parser
-impl Parser {
+impl UserAgentParser {
     pub fn new() -> Self {
         Self
     }
 }
 
 // Implement default for user agent parser
-impl Default for Parser {
+impl Default for UserAgentParser {
     fn default() -> Self {
         Self::new()
     }
@@ -36,7 +36,7 @@ impl Default for Parser {
 // Middleware factory is `Transform` trait
 // `S` - type of the next service
 // `B` - type of response's body
-impl<S, B> Transform<S, ServiceRequest> for Parser
+impl<S, B> Transform<S, ServiceRequest> for UserAgentParser
     where
         S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
         S::Future: 'static,
@@ -44,22 +44,22 @@ impl<S, B> Transform<S, ServiceRequest> for Parser
 {
     type Response = ServiceResponse<B>;
     type Error = Error;
-    type Transform = ParserMiddleware<S>;
+    type Transform = UserAgentParserMiddleware<S>;
     type InitError = ();
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(ParserMiddleware { service })
+        ok(UserAgentParserMiddleware { service })
     }
 }
 
 // Create user agent parser middleware service struct
-pub struct ParserMiddleware<S> {
+pub struct UserAgentParserMiddleware<S> {
     service: S,
 }
 
 // Implement service for middleware
-impl<S, B> Service<ServiceRequest> for ParserMiddleware<S>
+impl<S, B> Service<ServiceRequest> for UserAgentParserMiddleware<S>
     where
         S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
         S::Future: 'static,
@@ -86,7 +86,7 @@ impl<S, B> Service<ServiceRequest> for ParserMiddleware<S>
             .map_or(String::default(), |item| item.to_string());
 
         // Retrieve parser
-        let parser = req.app_data::<Data<UserAgentParser>>()
+        let parser = req.app_data::<Data<UAParser>>()
             .unwrap()
             .clone();
 
@@ -125,7 +125,7 @@ impl UserAgent {
     }
 
     // Creates user agent from parsed user agent string
-    pub fn from_parser<T: Into<String>>(parser: &UserAgentParser, ua_str: &str, ip: T) -> Self {
+    pub fn from_parser<T: Into<String>>(parser: &UAParser, ua_str: &str, ip: T) -> Self {
         // Set bindings
         let bindings = ip.into();
 

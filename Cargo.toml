@@ -1,50 +1,40 @@
 [package]
 name = "library"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [dependencies]
 actix = "0.13.0"
 actix-broker = "0.4.2" # used by this crate for websocket
 actix-cors = "0.6.1"
-actix-utils = "3.0.0"
-actix-web = "4.1.0"
+actix-files = "0.6.2"
+actix-web = "4.2.1"
 actix-web-actors = "4.1" # used by this crate for websocket
 actix-web-lab = "0.18.2" # used by this crate for sse
-actix-files = "0.6.2"
+actix-utils = "3.0.0"
 base64-url = "1.4.13"
 bstr = "1.0.0"
-bytes = "1.2.1"
-chrono = { version = "0.4.19", features = ["serde"] }
+chrono = "0.4.23"
 cron = "0.12.0"
-debugless-unwrap = "0.0.4"
 diesel = { version = "2.0.0", features = ["postgres", "r2d2", "chrono", "serde_json"] }
 futures = "0.3.21"
 futures-util = { version = "0.3.23", default-features = false, features = ["std"] } # used by this crate for sse (but mainly for isolating async/futures)
-handlebars = {version="4.2.2", features=["dir_source"]}
-image = "0.24.3"
-imagesize = "0.10.0"
-infer = "0.11.0"
+handlebars = { version="4.2.2", features=["dir_source"] }
+image = "0.24.5"
+infer = "0.12.0"
 lettre = "0.10.0-rc.7"
+#opencv = "0.74.2" # eventually enable this if you want to use face detection
 parking_lot = "0.12.1"  # used by this crate for sse
 paseto = "2.0.2+1.0.3"
 pin-project = "1.0.10"
 rand = "0.8.5"
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = "0.11.13"
 rusoto_core = "0.48.0"
 rusoto_s3 = "0.48.0"
+sanitizer = "0.1.6"
 serde = { version = "1.0.137", features =["derive"] }
-serde_json = {version = "1.0.81", features = ["preserve_order"] }
+serde_json = { version = "1.0.81", features = ["preserve_order"] }
 titlecase = "2.0.0"
-tokio = "1.21.2"
 user-agent-parser = "0.3.3"
+validator = { version = "0.16", features = ["derive"] }
 xsalsa20poly1305 = "0.9.0-pre"
-
-[profile.dev]
-opt-level = 0
-
-[profile.release]
-strip = true
-opt-level = "s"
-lto = true
-codegen-units = 1

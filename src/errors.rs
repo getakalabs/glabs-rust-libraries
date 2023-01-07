@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::Display;
 
-/// Errors enum consists of Message(String) type
+/// Struct container for errors
 #[derive(Debug, Clone)]
 pub enum Errors {
     Message(String)

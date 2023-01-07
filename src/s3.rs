@@ -1,33 +1,55 @@
-use bytes::Bytes;
-use debugless_unwrap::*;
-use image::{ImageBuffer, ImageFormat, imageops::FilterType};
-use imagesize::blob_size;
+use image::{GenericImageView, ImageFormat, Rgba};
+use image::imageops::FilterType;
 use infer::Infer;
+use reqwest;
 use rusoto_core::credential::{StaticProvider};
 use rusoto_core::{HttpClient, Region};
-use rusoto_s3::{GetObjectRequest, PutObjectRequest, S3 as RS3, S3Client};
+use rusoto_s3::{PutObjectRequest, S3 as RusotoS3, S3Client};
+use sanitizer::prelude::*;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::default::Default;
 use std::fs::File as StdFile;
 use std::io::{Cursor, Read};
 use std::str::FromStr;
-use actix_web::http::StatusCode;
-use actix_web::HttpResponse;
+use bstr::ByteSlice;
 
-use crate::Errors;
-use crate::File;
+
+// TODO: Use OpenCV to detect faces or content aware and use it as gravity
+// use opencv::objdetect::CascadeClassifierTrait;
+// use opencv::prelude::MatTraitConstManual;
+// use opencv::{
+//     imgcodecs,
+//     core::{
+//         Mat, Size,
+//         Point, Rect,
+//     },
+//     objdetect::CascadeClassifier,
+// };
+
+use crate::{Errors, File};
 use crate::strings;
-use crate::traits::Configurable;
 
-/// Set mime type for jpeg
-pub static BACKEND_MIME_JPEG: &'static str = "image/jpeg";
-
-/// S3 struct contains s3 specific configurations
-#[derive(Clone, Debug)]
+/// Struct container for s3
+#[derive(Debug, Clone, PartialEq, Sanitize, Serialize, Deserialize)]
 pub struct S3 {
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub access_key_id: String,
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub secret_access_key: String,
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub bucket: String,
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub path: String,
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub region: String,
+    #[sanitize(trim)]
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub module_profile_picture: String,
     pub image_small_size: usize,
     pub image_medium_size: usize,
@@ -53,21 +75,19 @@ impl Default for S3 {
     }
 }
 
-/// Configurable implementation for S3
-impl Configurable<S3> for S3 {
-    /// Implement new instance
+/// S3 implementation
+impl S3 {
+    /// Create new S3 instance
     ///
     /// Example
     /// ```
     /// use library::S3;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
-    ///     // Create new instance with default values
     ///     let s3 = S3::new();
     /// }
     /// ```
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             access_key_id: String::default(),
             secret_access_key: String::default(),
@@ -87,7 +107,6 @@ impl Configurable<S3> for S3 {
     /// Example
     /// ```
     /// use library::S3;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create new s3 instance with default values
@@ -95,7 +114,7 @@ impl Configurable<S3> for S3 {
     ///     s3.clear();
     /// }
     /// ```
-    fn clear(&mut self) -> Self {
+    pub fn clear(&mut self) -> Self {
         Self::default()
     }
 
@@ -104,7 +123,6 @@ impl Configurable<S3> for S3 {
     /// Example
     /// ```
     /// use library::S3;
-    /// use library::traits::Configurable;
     ///
     /// fn main() {
     ///     // Create old s3 instance with default values
@@ -118,7 +136,7 @@ impl Configurable<S3> for S3 {
     ///     old_s3.reconfigure(&new_s3);
     /// }
     /// ```
-    fn reconfigure(&mut self, item: &S3) {
+    pub fn reconfigure(&mut self, item: &S3) {
         self.access_key_id = item.clone().access_key_id;
         self.secret_access_key = item.clone().secret_access_key;
         self.bucket = item.clone().bucket;
@@ -131,53 +149,131 @@ impl Configurable<S3> for S3 {
         self.image_xls_size = item.clone().image_xls_size;
     }
 
-    /// Check if current instance has no value
+    /// Convert custom struct type to S3
     ///
     /// Example
     /// ```
-    /// use library::Paseto;
-    /// use library::traits::Configurable;
+    /// use library::S3;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// pub struct S32 {
+    ///     #[serde(skip_serializing_if = "Option::is_none")]
+    ///     pub access_key_id: Option<String>,
+    /// 	#[serde(skip_serializing_if = "Option::is_none")]
+    ///     pub secret_access_key: Option<String>,
+    /// }
     ///
     /// fn main() {
-    ///     // Create new paseto instance with default values
-    ///     let paseto = Paseto::new();
-    ///     let is_valid = paseto.is_none();
+    ///     let s3 = S3::from(S32{access_key_id: Some(String::from("AccessKeyIDHere")), secret_access_key: None});
     /// }
     /// ```
-    fn is_none(&self) -> bool {
-        let items = [
-            self.clone().access_key_id,
-            self.clone().bucket,
-            self.clone().path,
-            self.clone().region,
-            self.clone().module_profile_picture,
-        ];
-
-        for item in items {
-            if !item.is_empty() {
-                return false
-            }
-        }
-
-        let items = [
-            self.clone().image_small_size,
-            self.clone().image_medium_size,
-            self.clone().image_large_size,
-            self.clone().image_xls_size
-        ];
-
-        for item in items {
-            if item > 0 {
-                return false
-            }
-        }
-
-        true
+    #[allow(dead_code)]
+    pub fn from<T>(input: T) -> Self
+        where T: Serialize
+    {
+        let s = serde_json::to_string(&input).unwrap_or(String::default());
+        serde_json::from_str(&s).unwrap_or(S3::default())
     }
-}
 
-/// S3 implementation
-impl S3 {
+    /// Convert custom struct type to S3
+    ///
+    /// Example
+    /// ```
+    /// use library::S3;
+    ///
+    /// fn main() {
+    ///     let input = r#"{"access_key_id": "ABC1234", "secret_access_key": "ABC1234"}"#;
+    ///     let s3 = S3::from_string(input);
+    /// }
+    /// ```
+    #[allow(dead_code)]
+    pub fn from_string<T: Into<String>>(input: T) -> Self {
+        let bindings = input.into();
+        serde_json::from_str(&bindings).unwrap_or(S3::default())
+    }
+
+    /// Convert custom struct type from S3 to T
+    ///
+    /// Example
+    /// ```
+    /// use library::S3;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// /// Struct container for S32
+    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// pub struct S32 {
+    ///     #[serde(skip_serializing_if = "Option::is_none")]
+    ///     pub access_key_id: Option<String>,
+    ///     #[serde(skip_serializing_if = "Option::is_none")]
+    ///     pub secret_access_key: Option<String>
+    /// }
+    ///
+    /// /// Note: this is always required. Default implementation for S3
+    /// impl Default for S32 {
+    ///     fn default() -> Self {
+    ///         Self {
+    ///             access_key_id: None,
+    ///             secret_access_key: None
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let input = r#"{"access_key_id": "ABC1234", "secret_access_key": "ABC1234"}"#;
+    ///     let s3 = S3::from_string(input);
+    ///
+    ///     let s32 = s3.to::<S32>();
+    /// }
+    /// ```
+    #[allow(dead_code)]
+    pub fn to<T>(&self) -> T
+        where T: serde::de::DeserializeOwned + Default
+    {
+        let value = self.clone();
+        let s = serde_json::to_string(&value).unwrap_or(String::default());
+        let response: T = serde_json::from_str(&s).unwrap_or(T::default());
+
+        response
+    }
+
+    /// Check if s3s has no value
+    ///
+    /// Example
+    /// ```
+    /// // Import s3
+    /// use library::S3;
+    ///
+    /// fn main() {
+    ///     // Set s3
+    ///     let s3 = S3::new();
+    ///     let is_empty = s3.is_empty();
+    /// }
+    /// ```
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.clone() == Self::default()
+    }
+
+    /// Normalize s3 by performing sanitation and other important stuff
+    ///
+    /// Example
+    /// ```
+    /// // Import s3
+    /// use library::S3;
+    ///
+    /// fn main() {
+    ///     // Set s3
+    ///     let mut s3 = S3::new();
+    ///     let form = s3.normalize();
+    /// }
+    /// ```
+    #[allow(dead_code)]
+    pub fn normalize(&mut self) -> &mut Self {
+        self.sanitize();
+        self
+    }
+
     /// Retrieve client
     ///
     /// Example
@@ -190,10 +286,10 @@ impl S3 {
     ///     let result = s3.get_client();
     /// }
     /// ```
-    pub fn get_client(&self) -> Result<S3Client, Errors> {
+    pub fn get_client(&self) -> Option<S3Client> {
         // Client is unavailable
-        if self.is_none() {
-            return Err(Errors::new("Unable to initialize aws s3"));
+        if self.is_empty() {
+            return None;
         }
 
         // Set access, secret access key & region
@@ -201,7 +297,7 @@ impl S3 {
         let secret_access_key = self.secret_access_key.clone();
         let region = Region::from_str(&self.region);
         if region.is_err() {
-            return Err(Errors::new(region.unwrap_err().to_string()))
+            return None;
         }
 
         // Unwrap region
@@ -218,435 +314,310 @@ impl S3 {
         );
 
         // Return client
-        Ok(client)
+        Some(client)
     }
 
-    /// Retrieve file from s3 via file_name
-    ///
-    /// Example
-    /// ```
-    /// use library::s3::S3;
-    ///
-    /// fn main() {
-    ///     // Set new s3 instance
-    ///     let s3 = S3::default();
-    ///     let result = s3.get_file("image.jpg");
-    /// }
-    /// ```
-    pub async fn get_file<T: Into<String>>(&self, file_name: T) -> Result<HttpResponse, Errors> {
-        // Use tokio AsyncReadExt
-        use tokio::io::AsyncReadExt;
-
+    /// Upload file from url
+    pub async fn upload_from_url<U, F>(&self, url: U, file_name: F) -> Result<(), Errors>
+        where U: Into<String>,
+              F: Into<String>
+    {
         // Retrieve client
         let client = self.get_client();
-        if client.is_err() {
-            return Err(Errors::new(client.debugless_unwrap_err().to_string()));
+        if client.is_none() {
+            return Err(Errors::new("S3 client failed to initialize"));
         }
 
         // Shadow client
         let client = client.unwrap();
 
-        // Set GetObjectRequest
-        let req = GetObjectRequest{
-            bucket: self.bucket.to_string(),
-            key: format!("{}/{}", self.path.as_str(), file_name.into()),
-            ..Default::default()
-        };
-
-        // Set result
-        let result = client
-            .get_object(req)
-            .await;
-
-        // Check if file was retrieved
-        if result.is_err() {
-            return Err(Errors::new("File not found"));
-        }
-
-        // Shadow result
-        let result = result.unwrap();
-
-        // Stream vector
-        let mut stream = result.body.unwrap().into_async_read();
-        let mut body = Vec::new();
-
-        // Stream to body
-        let result = stream.read_to_end(&mut body).await.unwrap();
-        if result < 1 {
-            return Err(Errors::new("File not found"));
-        }
-
-        // Set info
-        let info = Infer::new();
-        let mime = info.get(&body.clone());
-
-        if mime.is_some() && !mime.clone().unwrap().mime_type().is_empty() {
-            return Ok(HttpResponse::build(StatusCode::OK)
-                .content_type(mime.clone().unwrap().mime_type())
-                .body(body))
-        }
-
-        // Return response
-        Ok(HttpResponse::build(StatusCode::OK).body(body))
-    }
-
-    /// Uploads image from social media via url.
-    /// Thumbnail sizes: xls, large, medium & small
-    /// xls: default is 1024x1024 px
-    /// large: default is 512x512 px
-    /// medium: default is 192x192 px
-    /// small: default is 72x72 px
-    pub async fn upload_image_from_socials<U, A, F, T>(&self, url:U, actor_id:A, file_id:F, thumbnail_size: T) -> Result<File, Errors>
-        where U: Into<String>,
-              A: Into<String>,
-              F: Into<String>,
-              T: Into<String>
-    {
-        // Create bindings
+        // Set bindings
         let url_bindings = url.into();
-        let actor_id_bindings = actor_id.into();
-        let file_id_bindings = file_id.into();
-        let thumbnail_size_bindings = thumbnail_size.into();
+        let filename = file_name.into();
+        let filename = strings::replace_filename(filename, "original");
 
-        // Client is unavailable
-        if self.is_none() {
-            return Err(Errors::new("Unable to initialize aws s3"));
-        }
-
-        // Retrieve file by byte
-        let result = reqwest::get(&url_bindings).await;
-        if result.is_err() {
-            return Err(Errors::new("Unable to download file from url"));
+        // Download the image from the URL
+        let response = reqwest::get(url_bindings).await;
+        if response.is_err() {
+            return Err(Errors::new("Unable download file from url"));
         }
 
         // Check bytes
-        let result = result.unwrap().bytes().await;
-        if result.is_err() {
+        let response = response.unwrap().bytes().await;
+        if response.is_err() {
             return Err(Errors::new("Unable to download file from url"));
         }
 
-        // Set actor and file id's
-        let aid = actor_id_bindings.clone();
-        let fid = file_id_bindings.clone();
+        // Create image buffer
+        let cursor = Cursor::new(response.unwrap().as_bytes().to_vec());
+        let buffer = cursor.get_ref();
 
-        //Set file bytes
-        let file_bytes = result.unwrap();
-        let mut file = File::new();
+        // Check out mime type
+        let info = Infer::new();
+        let mime = info
+            .get(&buffer.clone())
+            .map_or(String::default(), |t| String::from(t.mime_type()));
 
-        // Set xls size width
-        let width = self.image_xls_size.clone() as u32;
-        let height = self.image_xls_size.clone() as u32;
+        // Retrieve content type
+        let extension = strings::get_extension_from_mime(&mime);
+        let filename = strings::change_extension(filename, extension);
 
-        // Set resize
-        if width > 0 && height > 0 {
-            let bytes = file_bytes.clone();
-            let mut is_thumbnail = false;
-            if thumbnail_size_bindings.clone().to_lowercase().as_str() == "xls" {
-                is_thumbnail = true
-            }
+        // Set metadata
+        let mut metadata = HashMap::new();
+        metadata.insert(String::from("filename"), filename.clone());
 
-            let result = self.resize_upload_from_memory(file, bytes, width, height, &aid, &fid, is_thumbnail).await;
-            if result.is_err() {
-                return Err(Errors::new("Unable to download file from url"));
-            }
+        // Upload original image to s3
+        let request = PutObjectRequest {
+            metadata: Some(metadata),
+            bucket: self.bucket.to_owned(),
+            key: format!("{}/{}", self.path, filename),
+            body: Some(buffer.clone().into()),
+            acl: Some("public-read".to_owned()),
+            content_type: Some(mime),
+            ..Default::default()
+        };
 
-            file = result.unwrap();
-        }
-
-        // Set large size width
-        let width = self.image_large_size.clone() as u32;
-        let height = self.image_large_size.clone() as u32;
-
-        // Set resize
-        if width > 0 && height > 0 {
-            let bytes = file_bytes.clone();
-            let mut is_thumbnail = false;
-            if thumbnail_size_bindings.clone().to_lowercase().as_str() == "large" {
-                is_thumbnail = true
-            }
-
-            let result = self.resize_upload_from_memory(file, bytes, width, height, &aid, &fid, is_thumbnail).await;
-            if result.is_err() {
-                return Err(Errors::new("Unable to download file from url"));
-            }
-
-            file = result.unwrap();
-        }
-
-        // Set medium size width
-        let width = self.image_medium_size.clone() as u32;
-        let height = self.image_medium_size.clone() as u32;
-
-        // Set resize
-        if width > 0 && height > 0 {
-            let bytes = file_bytes.clone();
-            let mut is_thumbnail = false;
-            if thumbnail_size_bindings.clone().to_lowercase().as_str() == "medium" {
-                is_thumbnail = true
-            }
-
-            let result = self.resize_upload_from_memory(file, bytes, width, height, &aid, &fid, is_thumbnail).await;
-            if result.is_err() {
-                return Err(Errors::new("Unable to download file from url"));
-            }
-
-            file = result.unwrap();
-        }
-
-        // Set small size width
-        let width = self.image_small_size.clone() as u32;
-        let height = self.image_small_size.clone() as u32;
-
-        // Set resize
-        if width > 0 && height > 0 {
-            let bytes = file_bytes.clone();
-            let mut is_thumbnail = false;
-            if thumbnail_size_bindings.clone().to_lowercase().as_str() == "small" {
-                is_thumbnail = true
-            }
-
-            let result = self.resize_upload_from_memory(file, bytes, width, height, &aid, &fid, is_thumbnail).await;
-            if result.is_err() {
-                return Err(Errors::new("Unable to download file from url"));
-            }
-
-            file = result.unwrap();
-        }
-
-        // Set module
-        file.module = Some(self.module_profile_picture.clone());
-
-        // Split string
-        let split = url_bindings.split("/").collect::<Vec<&str>>();
-        let last = split.last();
-        if last.is_none() {
-            return Err(Errors::new("Unable to upload file"));
-        }
-
-        // Shadow last value
-        let mut split = last.unwrap().split(".");
-        let label = split.next();
-        if label.is_none() {
-            return Err(Errors::new("Unable to upload file"));
-        }
-
-        // Set file lable
-        file.label = Some( format!("{}.jpg", label.unwrap()));
-
-        // Return ok
-        Ok(file)
-    }
-
-    /// Resize uploading from memory
-    pub async fn resize_upload_from_memory<T>(
-        &self,
-        mut file: File,
-        bytes: Bytes,
-        width: u32,
-        height: u32,
-        actor_id: T,
-        file_id: T,
-        is_thumbnail: bool
-    ) -> Result<File, Errors>
-        where T: Into<String> + Copy
-    {
-        // Load an image with normal formatting
-        let dynamic_image = image::load_from_memory_with_format(&bytes.clone(), ImageFormat::Jpeg);
-        if  dynamic_image.is_err() {
-            return Err(Errors::new("Unable to download file from url"));
-        }
-
-        // Get client
-        let result = self.get_client();
+        // Upload file
+        let result = client.put_object(request).await;
         if result.is_err() {
-            return Err(Errors::new(result.debugless_unwrap_err().to_string()));
+            return Err(Errors::new("Unable to upload your file"));
         }
 
-        // Set client
-        let client = result.unwrap();
-
-        // Check if thumbnail
-        return match is_thumbnail {
-            true => {
-                // Set thumbnail name
-                file.thumbnail = Some(format!("{}-{}-thumbnail-{}px-{}px.jpg", actor_id.into(), file_id.into(), width.clone(), height.clone()));
-                let file_name = file.thumbnail.as_ref().unwrap().clone();
-
-                // Create scaled output
-                let scaled = dynamic_image.unwrap().resize(width, height, FilterType::Lanczos3);
-
-                // Create buffer
-                let mut cursor = Cursor::new(vec![]);
-                let output = scaled.write_to(&mut cursor, ImageFormat::Jpeg);
-                if output.is_err() {
-                    return Err(Errors::new("Unable to read file"));
-                }
-
-                // Save buffer & convert to ByteStream
-                let buffer = cursor.get_ref();
-
-                // Set info
-                let info = Infer::new();
-                let mut mime:Option<String> = None;
-
-                // Check out mime type
-                let mime_type = info.get(&buffer.clone());
-                if mime_type.is_some() && !mime_type.clone().unwrap().mime_type().is_empty() {
-                    mime = Some(String::from(mime_type.clone().unwrap().mime_type()));
-                }
-
-                // Set mime type
-                file.mime_type = mime.clone();
-
-                // Upload file
-                let req = PutObjectRequest {
-                    bucket: self.bucket.to_owned(),
-                    key: format!("{}/{}", self.path.as_str(), file_name.as_str()),
-                    body: Some(buffer.clone().into()),
-                    acl: Some("public-read".to_owned()),
-                    content_type: mime,
-                    ..Default::default()
-                };
-
-                let result = client.put_object(req).await;
-                if result.is_err() {
-                    return Err(Errors::new("Unable to upload file"));
-                }
-
-                // Set width and heigth
-                file.width = Some(width.clone() as i32);
-                file.height = Some(height.clone() as i32);
-
-                // Return ok
-                Ok(file)
-            },
-            false => {
-                // Set file name
-                file.file_name = Some(format!("{}-{}-{}px-{}px.jpg", actor_id.into(), file_id.into(), width.clone(), height.clone()));
-                let file_name = file.file_name.as_ref().unwrap().clone();
-
-                // Unwrap dynamic image
-                let mut scaled = dynamic_image.unwrap();
-
-                // Create buffer
-                let mut cursor = Cursor::new(vec![]);
-                let output = scaled.write_to(&mut cursor, ImageFormat::Jpeg);
-                if output.is_err() {
-                    return Err(Errors::new("Unable to read file"));
-                }
-
-                // Save buffer & convert to ByteStream
-                let buffer = cursor.get_ref();
-                let data = &buffer.clone()[..];
-
-                // Read file size from buffer
-                let blob = blob_size(data);
-                if blob.is_err() {
-                    return Err(Errors::new("Unable to read file"));
-                }
-
-                // Get original sizes
-                let size = blob.unwrap();
-
-                // Create scaled output
-                let mut img = ImageBuffer::from_fn(width, height, |_x, _y| image::Rgba([0, 0, 0, 0]));
-                image::imageops::overlay(
-                    &mut img,
-                    &mut scaled,
-                    (width as i64 - size.width as i64) / 2,
-                    (height as i64 - size.height as i64) / 2
-                );
-
-                // Create buffer
-                let mut cursor = Cursor::new(vec![]);
-                let output = img.write_to(&mut cursor, ImageFormat::Jpeg);
-                if output.is_err() {
-                    return Err(Errors::new("Unable to read file"));
-                }
-
-                // Save buffer & convert to ByteStream
-                let buffer = cursor.get_ref();
-
-                // Set info
-                let info = Infer::new();
-                let mut mime:Option<String> = None;
-
-                // Check out mime type
-                let mime_type = info.get(&buffer.clone());
-                if mime_type.is_some() && !mime_type.clone().unwrap().mime_type().is_empty() {
-                    mime = Some(String::from(mime_type.clone().unwrap().mime_type()));
-                }
-
-                // Set mime type
-                file.mime_type = mime.clone();
-
-                // Upload file
-                let req = PutObjectRequest {
-                    bucket: self.bucket.to_owned(),
-                    key: format!("{}/{}", self.path.as_str(), file_name.as_str()),
-                    body: Some(buffer.clone().into()),
-                    acl: Some("public-read".to_owned()),
-                    content_type: mime.clone(),
-                    ..Default::default()
-                };
-
-                let result = client.put_object(req).await;
-                if result.is_err() {
-                    return Err(Errors::new("Unable to upload file"));
-                }
-
-                // Set file size
-                let length = buffer.clone().len();
-                file.file_size = Some(strings::get_file_size(length as f64));
-                file.width = Some(width.clone() as i32);
-                file.height = Some(height.clone() as i32);
-
-                // Return ok
-                Ok(file)
-            }
-        }
+        Ok(())
     }
 
-    /// Try a test upload to s3
-    /// Example
-    /// ```
-    /// use library::s3::S3;
-    ///
-    /// fn main() {
-    ///     // Set new s3 instance
-    ///     let s3 = S3::default();
-    ///     let result = S3::test_upload("access_key_id", "secret_access_key", "region", "bucket_name", "folder_name");
-    /// }
-    /// ```
-    pub async fn test_upload<T>(
-        access_key_id: T,
-        secret_access_key: T,
-        region: T,
-        bucket: T,
-        folder: T
-    ) -> Result<(), Errors>
+    /// Upload original image. This will add `-original` to your filename before uploading
+    pub async fn upload_original<T>(&self, data: Vec<u8>, file_name: T, sizes: Option<Vec<(u32, u32)>>) -> Result<(), Errors>
         where T: Into<String>
     {
-        // Set access, secret access key & region
-        let access_key = access_key_id.into();
-        let secret_access_key = secret_access_key.into();
-        let region = Region::from_str(&region.into());
-        if region.is_err() {
-            return Err(Errors::new(region.unwrap_err().to_string().as_str()))
+        // Retrieve client
+        let client = self.get_client();
+        if client.is_none() {
+            return Err(Errors::new("S3 client failed to initialize"));
         }
 
-        // Unwrap region
-        let region = region.unwrap();
+        // Shadow client
+        let client = client.unwrap();
 
-        // Set aws credentials
-        let credentials = StaticProvider::new_minimal(access_key, secret_access_key);
+        // Create bindings
+        let file_name_bindings = file_name.into();
 
-        // Set client
-        let client = S3Client::new_with(
-            HttpClient::new().expect("Failed to create request dispatcher"),
-            credentials,
-            region,
-        );
+        // Set filename
+        let filename = strings::replace_filename(file_name_bindings, "original");
+
+        // Check out mime type
+        let info = Infer::new();
+        let mime = info
+            .get(&data.clone())
+            .map_or(String::default(), |t| String::from(t.mime_type()));
+
+        // Set metadata
+        let mut metadata = HashMap::new();
+        metadata.insert(String::from("filename"), filename.clone());
+
+        // Upload original image to s3
+        let request = PutObjectRequest {
+            metadata: Some(metadata),
+            bucket: self.bucket.to_owned(),
+            key: format!("{}/{}", self.path, filename.clone()),
+            body: Some(data.clone().into()),
+            acl: Some("public-read".to_owned()),
+            content_type: Some(mime.clone()),
+            ..Default::default()
+        };
+
+        // Upload file
+        let result = client.put_object(request).await;
+        if result.is_err() {
+            return Err(Errors::new("Unable to upload your file"));
+        }
+
+        // Check if current mime type is image
+        if sizes.is_some() && File::is_image(mime) {
+            for (width, height) in sizes.unwrap() {
+                let retain_size = false;
+                let result = self.generate_thumbnail(data.clone(), &filename, width as u32, height as u32, retain_size).await;
+                if result.is_err() {
+                    return result;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Upload a thumbnail of image
+    pub async fn generate_thumbnail<T>(&self, data: Vec<u8>, file_name: T, width: u32, height: u32, retain_size: bool) -> Result<(), Errors>
+        where T: Into<String>
+    {
+        // Create filename bindings
+        let filename = file_name.into();
+        let filename = strings::replace_filename(filename, format!("{}x{}", width, height));
+        let filename = strings::change_extension(filename, "png");
+
+        // Retrieve client
+        let client = self.get_client();
+        if client.is_none() {
+            return Err(Errors::new("S3 client failed to initialize"));
+        }
+
+        // Shadow client
+        let client = client.unwrap();
+
+        // Create image buffer
+        let cursor = Cursor::new(data.clone());
+        let buffer = cursor.get_ref();
+
+        // Check out mime type
+        let info = Infer::new();
+        let mime = info
+            .get(&buffer.clone())
+            .map_or(String::default(), |t| String::from(t.mime_type()));
+
+        // Check if data is image
+        if !File::is_image(mime) {
+            return Err(Errors::new("Invalid image type"));
+        }
+
+        // Load image from data
+        let image = image::load_from_memory(&data);
+        if image.is_err() {
+            return Err(Errors::new("Unable to load image"));
+        }
+
+        // Shadow image
+        let image = image.unwrap();
+
+        // Calculate the size of the thumbnail
+        let (orig_width, orig_height) = image.dimensions();
+        let ratio = f64::min( orig_width as f64 / width as f64, orig_height as f64 / height as f64);
+        let new_width = (orig_width as f64 / ratio) as u32;
+        let new_height = (orig_height as f64 / ratio) as u32;
+
+        let mut thumbnail = if retain_size {
+            // image.resize(orig_width, orig_height, FilterType::Lanczos3)
+            image
+        } else {
+            image.resize(new_width, new_height, FilterType::Triangle)
+        };
+
+        // Crop the image to a square with the center as the gravity
+        let (thumb_width, thumb_height) = thumbnail.dimensions();
+
+        // Convert to f64
+        let x:f64 = (thumb_width as f64 - width as f64) / 2.0;
+        let y:f64 = (thumb_height as f64 - height as f64) / 2.0;
+
+        // Round images to u32
+        let x = x.round() as u32;
+        let y = y.round() as u32;
+
+        thumbnail = thumbnail.crop(x, y, width, height);
+
+        // Add transparent padding if needed
+        let mut padded_thumbnail = image::ImageBuffer::new(width, height);
+        let transparent = Rgba([0, 0, 0, 0]);
+        for (_, _, pixel) in padded_thumbnail.enumerate_pixels_mut() {
+            *pixel = transparent;
+        }
+
+        // Set overlay
+        image::imageops::overlay(&mut padded_thumbnail, &thumbnail, x as i64, y as i64);
+
+        // Open the file and read its contents
+        let mut cursor = Cursor::new(vec![]);
+        let result = thumbnail.write_to(&mut cursor, ImageFormat::Png);
+        if result.is_err() {
+            return Err(Errors::new("Thumbnail generation failed"));
+        }
+
+        // Set buffer
+        let buffer = cursor.get_ref();
+
+        // Check out mime type
+        let info = Infer::new();
+        let mime = info
+            .get(&data.clone())
+            .map_or(String::default(), |t| String::from(t.mime_type()));
+
+        // Set metadata
+        let mut metadata = HashMap::new();
+        metadata.insert(String::from("filename"), filename.clone());
+
+        // Upload original image to s3
+        let request = PutObjectRequest {
+            metadata: Some(metadata),
+            bucket: self.bucket.to_owned(),
+            key: format!("{}/{}", self.path, filename),
+            body: Some(buffer.clone().into()),
+            acl: Some("public-read".to_owned()),
+            content_type: Some(mime),
+            ..Default::default()
+        };
+
+        // Upload file
+        let result = client.put_object(request).await;
+        if result.is_err() {
+            return Err(Errors::new("Unable to upload your file"));
+        }
+
+        Ok(())
+    }
+
+    /// Test out s3 config and upload
+    pub async fn test_image_upload(&self) -> Result<(), Errors> {
+        use std::time::Instant;
+        let start = Instant::now();
+
+        // Set filename
+        let file_name = "nature-1-image.jpg";
+
+        // Set path of sample upload
+        let stream = StdFile::open(format!("./assets/sample/{}", file_name));
+        if stream.is_err() {
+            return Err(Errors::new(format!("Sample {} not found in path", file_name)));
+        }
+
+        // Unwrap stream
+        let mut stream = stream.unwrap();
+        let mut contents: Vec<u8> = Vec::new();
+
+        // Read file to end
+        let result = stream.read_to_end(&mut contents);
+        if result.is_err() {
+            return Err(Errors::new("Unable to read file"));
+        }
+
+        // Create vector of width and height
+        let sizes = Some(vec![
+            (self.image_small_size.clone() as u32, self.image_small_size.clone() as u32),
+            (self.image_medium_size.clone() as u32, self.image_medium_size.clone() as u32),
+            (self.image_large_size.clone() as u32, self.image_large_size.clone() as u32),
+            (self.image_xls_size.clone() as u32, self.image_xls_size.clone() as u32),
+        ]);
+
+        // Upload file
+        let result = self.upload_original(contents.clone(), file_name, sizes).await;
+        if result.is_err() {
+            return result;
+        }
+
+        let duration = start.elapsed();
+        println!("Time elapsed is: {:?}", duration);
+
+        Ok(())
+    }
+
+    /// Test out s3 config and upload
+    pub async fn test_doc_upload(&self) -> Result<(), Errors> {
+        // Retrieve client
+        let client = self.get_client();
+        if client.is_none() {
+            return Err(Errors::new("S3 client failed to initialize"));
+        }
+
+        // Shadow client
+        let client = client.unwrap();
 
         // Set path of sample upload
         let stream = StdFile::open("./assets/sample/doc.txt");
@@ -666,7 +637,7 @@ impl S3 {
 
         // Set info
         let info = Infer::new();
-        let mut mime:Option<String> = None;
+        let mut mime: Option<String> = None;
 
         // Check out mime type
         let mime_type = info.get(&contents.clone());
@@ -676,8 +647,8 @@ impl S3 {
 
         // Upload file
         let req = PutObjectRequest {
-            bucket: bucket.into().to_owned(),
-            key: format!("{}/doc.txt", folder.into()),
+            bucket: self.bucket.to_owned(),
+            key: format!("{}/doc.txt", self.path),
             body: Some(contents.into()),
             acl: Some("public-read".to_owned()),
             content_type: mime,
@@ -691,4 +662,133 @@ impl S3 {
 
         Ok(())
     }
+
+    // ToDo: Update the code to work properly with OpenCV
+    // /// Upload original image. This will add `-original` to your filename before uploading
+    // pub async fn generate_thumbnail(&self, data: Vec<u8>, file_name: T, width: u32, height: u32, retain_size: bool) -> Result<(), Errors>
+    //     where T: Into<String>
+    // {
+    //     // Create filename bindings
+    //     let filename = file_name.into();
+    //     let filename = strings::replace_filename(filename, format!("{}x{}", width, height));
+    //
+    //     // Retrieve client
+    //     let client = self.get_client();
+    //     if client.is_none() {
+    //         return Err(Errors::new("S3 client failed to initialize"));
+    //     }
+    //
+    //     // Shadow client
+    //     let client = client.unwrap();
+    //
+    //     // Load image from data
+    //     let image = image::load_from_memory(&data)?;
+    //
+    //     // Retrieve dimension
+    //     let (orig_width, orig_height) = image.dimensions();
+    //     let thumbnail = if orig_width > width || orig_height > height {
+    //         // Resize original image if its dimensions are larger than the thumbnail dimensions
+    //         image.resize(width, height, FilterType::Nearest)
+    //     } else {
+    //         image
+    //     };
+    //
+    //     let mut thumbnail_data = Vec::new();
+    //     let _ = thumbnail.write_to(&mut thumbnail_data, ImageFormat::Png);
+    //
+    //     // Convert image data to OpenCV matrix
+    //     let image_data = imgcodecs::imdecode(
+    //         &thumbnail_data,
+    //         imgcodecs::IMREAD_COLOR,
+    //     )?;
+    //
+    //     // Detect faces in the image
+    //     let mut classifier = CascadeClassifier::new(&filename)?;
+    //     classifier.load("haarcascade_frontalface_default.xml")?;
+    //
+    //     let mut faces = Mat::default();
+    //     let _ = classifier.detect_multi_scale(&image_data, &mut faces.into(), 1.1, 3, 0, Size::new(30, 30), Size::default());
+    //
+    //     let num_faces = faces.size().height;
+    //
+    //     // Crop image around the detected face(s) or the center of the image if no face is detected
+    //     let (x, y, w, h) = if num_faces > 0 {
+    //         // Crop around the detected face(s)
+    //         let face_rect: Rect = faces.get(0, 0).unwrap();
+    //         let x = face_rect.x as u32;
+    //         let y = face_rect.y as u32;
+    //         let w = face_rect.width as u32;
+    //         let h = face_rect.height as u32;
+    //         (x, y, w, h)
+    //     } else {
+    //         // Crop around the center of the image
+    //         let x = (orig_width - width) / 2;
+    //         let y = (orig_height - height) / 2;
+    //         (x, y, width, height)
+    //     };
+    //
+    //     let mut resized_image = image.resize_to_fill(width, height, FilterType::Nearest);
+    //     let (resized_width, resized_height) = resized_image.dimensions();
+    //     let (dx, dy) = (
+    //         (resized_width as i32 - w as i32) / 2,
+    //         (resized_height as i32 - h as i32) / 2,
+    //     );
+    //
+    //     let mut cropped_image = resized_image.crop(x as u32 + dx as u32, y as u32 + dy as u32, w, h);
+    //     if num_faces > 0 {
+    //         // Add transparent padding to the cropped image to show a bit of the whole picture
+    //         let padding = 50; // number of pixels of padding to add
+    //         let mut padded_image = DynamicImage::new_rgba8(width + 2 * padding, height + 2 * padding);
+    //         let (padded_image_width, padded_image_height) = padded_image.dimensions();
+    //         let (dx, dy) = (
+    //             (padded_image_width - w) / 2,
+    //             (padded_image_height - h) / 2,
+    //         );
+    //
+    //         let _ = padded_image.copy_from(&cropped_image, dx, dy);
+    //         cropped_image = padded_image;
+    //     }
+    //
+    //     if retain_size {
+    //         // Check if the original image is at least 70% smaller than the thumbnail dimensions
+    //         if orig_width as f64 * 0.7 <= width as f64 && orig_height as f64 * 0.7 <= height as f64 {
+    //             // Add transparent padding to the cropped image to retain its original size
+    //             let mut padded_image = DynamicImage::new_rgba8(width, height);
+    //             let (padded_image_width, padded_image_height) = padded_image.dimensions();
+    //             let (dx, dy) = (
+    //                 (padded_image_width - cropped_image.width()) / 2,
+    //                 (padded_image_height - cropped_image.height()) / 2,
+    //             );
+    //
+    //             let _ = padded_image.copy_from(&cropped_image, dx, dy);
+    //             cropped_image = padded_image;
+    //         }
+    //     }
+    //
+    //     let mut cropped_data = Vec::new();
+    //     let _ = cropped_image.write_to(&mut cropped_data, ImageFormat::Png);
+    //
+    //     // Set metadata
+    //     let mut metadata = HashMap::new();
+    //     metadata.insert(String::from("filename"), filename.clone());
+    //
+    //     // Upload original image to s3
+    //     let request = PutObjectRequest {
+    //         metadata: Some(metadata),
+    //         bucket: self.bucket.to_owned(),
+    //         key: format!("{}/{}", self.path, filename),
+    //         body: Some(cropped_data.into()),
+    //         acl: Some("public-read".to_owned()),
+    //         content_type: Some(String::from("image/png")),
+    //         ..Default::default()
+    //     };
+    //
+    //     // Upload file
+    //     let result = client.put_object(request).await;
+    //     if result.is_err() {
+    //         return Err(Errors::new("Unable to upload your file"));
+    //     }
+    //
+    //     Ok(())
+    // }
 }
